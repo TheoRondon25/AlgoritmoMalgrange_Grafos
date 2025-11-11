@@ -9,6 +9,10 @@ import os
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
+# Armazenamento em memória dos dados das pessoas
+# Em produção, considere usar um banco de dados
+pessoas_data_storage = {}
+
 # Algoritmo de Malgrange (copiado do main.py original)
 def fecho_transitivo_direto(grafo, v, visitado=None):
     """Calcula todas as pessoas alcançáveis a partir de v"""
@@ -178,6 +182,10 @@ def analyze_file():
         if error:
             return jsonify({'error': error}), 400
 
+        # Armazenar dados das pessoas em memória
+        global pessoas_data_storage
+        pessoas_data_storage = pessoas_data.copy()
+
         # Create graph and find communities
         grafo = criar_grafo_por_categorias(pessoas_data)
         comunidades = algoritmo_malgrange(grafo)
@@ -197,7 +205,8 @@ def analyze_file():
         result = {
             'communities': communities_data,
             'total_people': len(pessoas_data),
-            'total_communities': len(comunidades)
+            'total_communities': len(comunidades),
+            'people_data': {pessoa: interesses for pessoa, interesses in pessoas_data.items()}
         }
 
         return jsonify(result)
@@ -208,6 +217,85 @@ def analyze_file():
 @app.route('/api/health', methods=['GET'])
 def health_check():
     return jsonify({'status': 'healthy'})
+
+@app.route('/api/update-person-interests', methods=['PUT'])
+def update_person_interests():
+    """Atualiza os interesses de uma pessoa e regenera as comunidades"""
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'error': 'Dados não fornecidos'}), 400
+        
+        person_name = data.get('person_name')
+        interests = data.get('interests', [])
+        
+        if not person_name:
+            return jsonify({'error': 'Nome da pessoa não fornecido'}), 400
+        
+        if not isinstance(interests, list):
+            return jsonify({'error': 'Interesses devem ser uma lista'}), 400
+        
+        global pessoas_data_storage
+        
+        if not pessoas_data_storage:
+            return jsonify({'error': 'Nenhum dado carregado. Por favor, analise um arquivo primeiro.'}), 400
+        
+        # Atualizar interesses da pessoa
+        pessoas_data_storage[person_name] = [interest.strip() for interest in interests if interest.strip()]
+        
+        # Regenerar grafo e comunidades
+        grafo = criar_grafo_por_categorias(pessoas_data_storage)
+        comunidades = algoritmo_malgrange(grafo)
+        
+        # Preparar resposta
+        communities_data = []
+        for i, comunidade in enumerate(comunidades):
+            members = list(comunidade)
+            shared_categories = analisar_categorias_comunidade(pessoas_data_storage, comunidade)
+            
+            communities_data.append({
+                'id': i,
+                'members': members,
+                'shared_categories': shared_categories
+            })
+        
+        result = {
+            'communities': communities_data,
+            'total_people': len(pessoas_data_storage),
+            'total_communities': len(comunidades),
+            'people_data': {pessoa: interesses for pessoa, interesses in pessoas_data_storage.items()}
+        }
+        
+        return jsonify(result)
+    
+    except Exception as e:
+        return jsonify({'error': f'Erro no servidor: {str(e)}'}), 500
+
+@app.route('/api/get-person-interests', methods=['GET'])
+def get_person_interests():
+    """Retorna os interesses de uma pessoa específica"""
+    try:
+        person_name = request.args.get('person_name')
+        
+        if not person_name:
+            return jsonify({'error': 'Nome da pessoa não fornecido'}), 400
+        
+        global pessoas_data_storage
+        
+        if not pessoas_data_storage:
+            return jsonify({'error': 'Nenhum dado carregado'}), 400
+        
+        if person_name not in pessoas_data_storage:
+            return jsonify({'error': 'Pessoa não encontrada'}), 404
+        
+        return jsonify({
+            'person_name': person_name,
+            'interests': pessoas_data_storage[person_name]
+        })
+    
+    except Exception as e:
+        return jsonify({'error': f'Erro no servidor: {str(e)}'}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8000))
